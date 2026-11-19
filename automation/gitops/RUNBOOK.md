@@ -27,7 +27,7 @@ re-syncing rather than installing.
 
 Plus: the `development/spring-boot-example-application` repository imported into
 GitLab with the CVE issue board and two project webhooks — issue comments for
-`/remediate` and `/generate-tests*`, and pushes to `main` for CI — 33 Tasks,
+`/remediate` and `/generate-tests*`, and pushes to `main` for CI — 34 Tasks,
 11 Pipelines, and every credential the pipelines need.
 
 Budget **2–3 hours of wall clock**, most of it unattended. RHTPA's first full

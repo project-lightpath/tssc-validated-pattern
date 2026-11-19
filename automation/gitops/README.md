@@ -6,7 +6,7 @@ installed by Argo CD onto a cluster that already has OpenShift GitOps running.
 | Component | Where the chart comes from | What it gives the demo |
 |---|---|---|
 | `components/pipelines` | this repo | OpenShift Pipelines (Tekton) operator |
-| `pipelines/` (repo root) | this repo, applied as plain YAML | the demo's 23 Tasks, 5 Pipelines, the issue-comment Triggers and `ai-agent-config` |
+| `pipelines/` (repo root) | this repo, applied as plain YAML | the demo's 34 Tasks, 11 Pipelines, the issue-comment Triggers and `ai-agent-config` |
 | `components/keycloak` | vendored from `redhat-ads-tech/ocp-app-platform-demo-helm` v1.4.2 | the `backstage` realm; `tpa-cli` / `tpa-frontend` / `trusted-artifact-signer` clients |
 | `components/gitlab` | vendored from the same, heavily reworked | the application repository, the CVE issue board, the `/remediate` webhook, and the pipeline's SCM credential |
 | `components/quay` | vendored from the same, plus the robot-account wiring | the registry application images are published to, and the `quay-push` credential the pipelines push with |
@@ -30,7 +30,7 @@ directory:
 
 | Application | Source | Wave |
 |---|---|---|
-| `ssc-tekton-tasks` | `pipelines/tasks/` — 33 Tasks | 3 |
+| `ssc-tekton-tasks` | `pipelines/tasks/` — 34 Tasks | 3 |
 | `ssc-tekton-config` | `pipelines/config/ai-agent-config.yaml` | 3 |
 | `ssc-tekton-pipelines` | `pipelines/pipelines/` — 11 Pipelines (see below) | 4 |
 | `ssc-tekton-triggers` | `pipelines/triggers/` — both EventListeners, bindings, templates, RBAC, Routes | 5 |

@@ -1,0 +1,116 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: maven-use-dep-version
+  labels:
+    app.kubernetes.io/part-of: maven-build-ci
+  annotations:
+    tekton.dev/source: https://github.com/mojohaus/versions
+    tekton.dev/tags: "security, remediation, maven"
+spec:
+  description: >-
+    Apply the selected dependency version to the shared Maven checkout using
+    versions:use-dep-version. The remediation Pipeline builds the project and
+    opens the PR.
+  params:
+    - name: SUBDIRECTORY
+      type: string
+      default: source
+    - name: CVE_ID
+      type: string
+    - name: PACKAGE
+      type: string
+      description: Maven coordinates (groupId:artifactId) to update.
+    - name: CURRENT_VERSION
+      type: string
+      description: Current version to match. Leave empty to filter by coordinates only.
+      default: ""
+    - name: FIXED_VERSION
+      type: string
+    - name: JUSTIFICATION
+      type: string
+      default: ""
+    - name: AGENT_IMAGE
+      type: string
+      description: Accepted for compatibility with the remediation Pipeline.
+      default: ""
+  workspaces:
+    - name: source
+    - name: maven-settings
+      optional: true
+      readOnly: true
+      description: Maven settings.xml containing the repository mirror and credentials.
+  steps:
+    - name: remediate
+      image: docker.io/library/maven:3.9.11-eclipse-temurin-17
+      env:
+        - name: SOURCE_WORKSPACE
+          value: $(workspaces.source.path)
+        - name: MAVEN_SETTINGS_PATH
+          value: $(workspaces.maven-settings.path)
+        - name: MAVEN_SETTINGS_BOUND
+          value: $(workspaces.maven-settings.bound)
+        - name: SUBDIRECTORY
+          value: $(params.SUBDIRECTORY)
+        - name: CVE_ID
+          value: $(params.CVE_ID)
+        - name: PACKAGE
+          value: $(params.PACKAGE)
+        - name: CURRENT_VERSION
+          value: $(params.CURRENT_VERSION)
+        - name: FIXED_VERSION
+          value: $(params.FIXED_VERSION)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        fail() {
+          printf '%s\n' "$*" >&2
+          exit 1
+        }
+
+        [[ "${PACKAGE}" =~ ^[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+$ ]] \
+          || fail 'PACKAGE must be Maven coordinates (groupId:artifactId).'
+        version_pattern='^[a-zA-Z0-9_.+-]+$'
+        [[ "${FIXED_VERSION}" =~ ${version_pattern} ]] \
+          || fail 'FIXED_VERSION must be a concrete Maven version.'
+
+        includes="${PACKAGE}"
+        if [[ -n "${CURRENT_VERSION}" ]]; then
+          [[ "${CURRENT_VERSION}" =~ ${version_pattern} ]] \
+            || fail 'CURRENT_VERSION must be a concrete Maven version.'
+          includes="${PACKAGE}:*:*:${CURRENT_VERSION}"
+        fi
+
+        workspace="$(realpath -- "${SOURCE_WORKSPACE}")"
+        project="$(realpath -- "${workspace}/${SUBDIRECTORY}")"
+        [[ "${project}" == "${workspace}" || "${project}" == "${workspace}/"* ]] \
+          || fail 'SUBDIRECTORY must resolve inside the source workspace.'
+        cd "${project}"
+        [[ -f pom.xml ]] || fail "No pom.xml found in ${project}."
+
+        maven_args=(-B -ntp -Dstyle.color=never -Dmaven.repo.local=/tmp/maven-use-dep-version/repository)
+        if [[ "${MAVEN_SETTINGS_BOUND}" == true ]]; then
+          settings="${MAVEN_SETTINGS_PATH}/settings.xml"
+          [[ -r "${settings}" ]] || fail 'The maven-settings workspace must contain a readable settings.xml.'
+          maven_args+=(--settings "${settings}")
+        fi
+
+        pom_diff=(
+          git -c "safe.directory=${workspace}" -c "safe.directory=${workspace}/source"
+          -c "safe.directory=${project}"
+          diff --no-ext-diff --no-textconv --binary HEAD -- pom.xml '*/pom.xml'
+        )
+        before="$("${pom_diff[@]}")"
+
+        # The decision supplies the version. Force the exact pin even if the
+        # mirror omits it from version metadata. The next Task resolves it.
+        printf 'Remediating %s: %s -> %s\n' "${CVE_ID}" "${PACKAGE}" "${FIXED_VERSION}"
+        mvn "${maven_args[@]}" \
+          org.codehaus.mojo:versions-maven-plugin:2.25.2:use-dep-version \
+          "-Dincludes=${includes}" "-DdepVersion=${FIXED_VERSION}" \
+          -DprocessProperties=true -DforceVersion=true -DgenerateBackupPoms=false
+
+        after="$("${pom_diff[@]}")"
+        [[ "${after}" != "${before}" ]] \
+          || fail "No POM changed for ${PACKAGE}. Check the current version and whether an editable declaration exists."

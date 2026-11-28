@@ -1,0 +1,114 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: snow-lookup
+  labels:
+    app.kubernetes.io/part-of: maven-build-ci
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.41.0"
+    tekton.dev/tags: "snow, servicenow, incident, lookup"
+spec:
+  description: >-
+    Resolve the Snow incident number for a CVE on an application. When an
+    explicit incident number was given (e.g. "/remediate INC0023261"),
+    that wins. Otherwise the task derives the application's cmdb_ci from
+    the repository URL and queries Snow for an OPEN incident with the
+    per-CVE guid marker -- the same (cmdb_ci, guid) natural key the
+    ticket-creation and dedup logic use. The result is empty when no
+    incident is found (or Snow is unreachable), and downstream tasks
+    treat that as "no Snow comment".
+
+    This is the derive-don't-record principle applied to correlation:
+    the incident number is derivable from (CVE, application), so the
+    /remediate command does not need to carry it.
+  params:
+    - name: SNOW_INCIDENT_NUMBER
+      type: string
+      description: Explicit incident number from the trigger (empty = auto-resolve).
+      default: ""
+    - name: CVE_ID
+      type: string
+      description: The CVE being remediated (used to derive the guid marker).
+    - name: GIT_URL
+      type: string
+      description: HTTPS URL of the application repository (used to derive cmdb_ci).
+    - name: SNOW_BASE_URL
+      type: string
+      description: Base URL of the snow-mock API.
+      default: http://snow-mock.snow.svc.cluster.local:8080
+    - name: SNOW_SECRET_NAME
+      type: string
+      description: Secret with keys username/password for snow-mock Basic auth.
+      default: tssc-snow-api
+    - name: GIT_IMAGE
+      type: string
+      description: Image this task runs in (needs curl and jq).
+      default: quay.io/sscdemo/ai-agent-maven-aider:v1.0.1
+  results:
+    - name: SNOW_INCIDENT
+      description: The resolved Snow incident number (empty = none found).
+  volumes:
+    - name: snow-secret
+      secret:
+        secretName: $(params.SNOW_SECRET_NAME)
+        optional: true
+  steps:
+    - name: lookup
+      image: $(params.GIT_IMAGE)
+      env:
+        - name: HOME
+          value: /tekton/home
+        - name: EXPLICIT
+          value: $(params.SNOW_INCIDENT_NUMBER)
+        - name: CVE_ID
+          value: $(params.CVE_ID)
+        - name: GIT_URL
+          value: $(params.GIT_URL)
+        - name: SNOW_BASE_URL
+          value: $(params.SNOW_BASE_URL)
+      volumeMounts:
+        - name: snow-secret
+          mountPath: /run/secrets/snow
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # --- explicit override wins ------------------------------------------
+        if [ -n "${EXPLICIT}" ]; then
+          echo "Using explicit Snow incident number: ${EXPLICIT}"
+          printf '%s' "${EXPLICIT}" > "$(results.SNOW_INCIDENT.path)"
+          exit 0
+        fi
+
+        printf '' > "$(results.SNOW_INCIDENT.path)"
+
+        # --- graceful degradation ---------------------------------------------
+        code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+          "${SNOW_BASE_URL}/api/v1/health" 2>/dev/null || echo 000)"
+        if [ "${code}" != "200" ]; then
+          echo "Snow is not reachable (health HTTP ${code}); no incident to resolve."
+          exit 0
+        fi
+        if [ ! -f /run/secrets/snow/password ]; then
+          echo "Snow credentials Secret not found; no incident to resolve."
+          exit 0
+        fi
+        SNOW_USER="$(cat /run/secrets/snow/username 2>/dev/null || echo demo)"
+        SNOW_PASS="$(cat /run/secrets/snow/password)"
+
+        # --- auto-resolve by (cmdb_ci, guid) -----------------------------------
+        CMDB_CI="$(echo "${GIT_URL}" | sed -E 's#^https?://##; s#^[^/]+/##; s#\.git$##')"
+        GUID="cve-${CVE_ID}"
+        query="$(printf 'cmdb_ci=%s&guid=%s&open_only=1&limit=1' \
+          "$(printf '%s' "${CMDB_CI}" | jq -sRr @uri)" \
+          "$(printf '%s' "${GUID}" | jq -sRr @uri)")"
+        RESP="$(curl -sS -u "${SNOW_USER}:${SNOW_PASS}" \
+          "${SNOW_BASE_URL}/api/v1/incidents?${query}")"
+        number="$(printf '%s' "${RESP}" | jq -r '.result[0].number // empty')"
+        if [ -n "${number}" ]; then
+          echo "Resolved Snow incident for ${CVE_ID} on ${CMDB_CI}: ${number}"
+          printf '%s' "${number}" > "$(results.SNOW_INCIDENT.path)"
+        else
+          echo "No open Snow incident for ${CVE_ID} on ${CMDB_CI}; no comment will be posted."
+        fi

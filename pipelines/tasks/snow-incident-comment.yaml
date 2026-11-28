@@ -1,0 +1,124 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: snow-incident-comment
+  labels:
+    app.kubernetes.io/part-of: maven-build-ci
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.41.0"
+    tekton.dev/tags: "snow, servicenow, incident, comment"
+spec:
+  description: >-
+    Post a comment on a Snow (snow-mock ServiceNow simulator) incident
+    linking the remediation MR/PR that was opened for it. Takes the
+    incident number (e.g. INC0023261) and the PR URL; validates the
+    incident exists before commenting. Skips cleanly when no incident
+    number was given, when Snow is unreachable, when the credentials
+    Secret is absent, or when the incident number is not found -- a
+    remediation run must never fail because its Snow bookkeeping could
+    not be done.
+  params:
+    - name: SNOW_INCIDENT_NUMBER
+      type: string
+      description: The Snow incident number to comment on (e.g. INC0023261). Empty skips.
+      default: ""
+    - name: PR_URL
+      type: string
+      description: URL of the remediation MR/PR to link from the comment.
+      default: ""
+    - name: CVE_ID
+      type: string
+      description: The CVE being remediated (comment context).
+      default: ""
+    - name: SNOW_BASE_URL
+      type: string
+      description: Base URL of the snow-mock API.
+      default: http://snow-mock.snow.svc.cluster.local:8080
+    - name: SNOW_SECRET_NAME
+      type: string
+      description: Secret with keys username/password for snow-mock Basic auth.
+      default: tssc-snow-api
+    - name: GIT_IMAGE
+      type: string
+      description: Image this task runs in (needs curl and jq).
+      default: quay.io/sscdemo/ai-agent-maven-aider:v1.0.1
+  results:
+    - name: COMMENTED
+      description: '"1" if a comment was posted, "0" otherwise.'
+  volumes:
+    - name: snow-secret
+      secret:
+        secretName: $(params.SNOW_SECRET_NAME)
+        optional: true
+  steps:
+    - name: comment
+      image: $(params.GIT_IMAGE)
+      env:
+        - name: HOME
+          value: /tekton/home
+        - name: INCIDENT
+          value: $(params.SNOW_INCIDENT_NUMBER)
+        - name: PR_URL
+          value: $(params.PR_URL)
+        - name: CVE_ID
+          value: $(params.CVE_ID)
+        - name: SNOW_BASE_URL
+          value: $(params.SNOW_BASE_URL)
+      volumeMounts:
+        - name: snow-secret
+          mountPath: /run/secrets/snow
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        printf '0' > "$(results.COMMENTED.path)"
+
+        # --- skip conditions (all are success paths, not failures) ----------
+        if [ -z "${INCIDENT}" ]; then
+          echo "No Snow incident number provided; skipping."
+          exit 0
+        fi
+        if [ -z "${PR_URL}" ]; then
+          echo "No PR URL (open-pr produced no link); skipping."
+          exit 0
+        fi
+        code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+          "${SNOW_BASE_URL}/api/v1/health" 2>/dev/null || echo 000)"
+        if [ "${code}" != "200" ]; then
+          echo "Snow is not reachable at ${SNOW_BASE_URL} (health HTTP ${code}); skipping."
+          exit 0
+        fi
+        if [ ! -f /run/secrets/snow/password ]; then
+          echo "Snow credentials Secret not found; skipping."
+          exit 0
+        fi
+        SNOW_USER="$(cat /run/secrets/snow/username 2>/dev/null || echo demo)"
+        SNOW_PASS="$(cat /run/secrets/snow/password)"
+
+        # --- validate the incident exists -----------------------------------
+        code="$(curl -sS -u "${SNOW_USER}:${SNOW_PASS}" -o /dev/null -w '%{http_code}' \
+          "${SNOW_BASE_URL}/api/v1/incidents/${INCIDENT}")"
+        if [ "${code}" != "200" ]; then
+          echo "Snow incident ${INCIDENT} not found (HTTP ${code}); skipping."
+          exit 0
+        fi
+
+        # --- post the comment ------------------------------------------------
+        comment="Remediation MR opened for ${CVE_ID}: ${PR_URL}"
+
+        RESP="$(jq -n --arg body "${comment}" \
+          '{body: $body, created_by: "tssc-pipeline", type: "additional_comments"}' \
+          | curl -sS -u "${SNOW_USER}:${SNOW_PASS}" \
+               -H "Content-Type: application/json" \
+               -X POST --data @- \
+               "${SNOW_BASE_URL}/api/v1/incidents/${INCIDENT}/comments")"
+
+        if printf '%s' "${RESP}" | jq -e 'has("sys_id") or has("result")' >/dev/null 2>&1; then
+          echo "Commented on ${INCIDENT}: ${comment}"
+          printf '1' > "$(results.COMMENTED.path)"
+        else
+          echo "ERROR posting comment to ${INCIDENT}: $(printf '%s' "${RESP}" | jq -c .)" >&2
+          # Bookkeeping failure must not fail the remediation run.
+          exit 0
+        fi

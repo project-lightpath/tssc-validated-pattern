@@ -1,0 +1,146 @@
+{{- $subdomain := required "Set cluster.subdomain" .Values.cluster.subdomain }}
+{{- $auth := .Values.snow.auth }}
+{{- $group := .Values.gitGroup }}
+# -----------------------------------------------------------------------------
+# Registers the demo applications on the snow-mock board. snow-mock has no
+# CMDB API: an application "exists" as incidents whose cmdb_ci names it --
+# the same convention the Automation Orchestrator integration uses (it
+# stamps the GitLab path there), so a future AO wiring finds these records
+# without migration. The registration incident carries the
+# tssc-app-registration guid marker; the Job is idempotent (skips apps
+# already registered) and re-runnable with Argo's Replace/Force.
+# -----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: snow-register-apps
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  register.py: |
+    import base64
+    import json
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    BASE = os.environ.get("SNOW_BASE_URL", "http://snow-mock.{{ .Values.namespace }}.svc.cluster.local:8080")
+    USER = os.environ.get("SNOW_AUTH_USER", "")
+    PASSWORD = os.environ.get("SNOW_AUTH_PASSWORD", "")
+    GUID = "tssc-app-registration"
+    APPS = json.loads(os.environ["SNOW_APPS"])
+
+    def call(path, method="GET", body=None):
+        headers = {"Accept": "application/json"}
+        if USER:
+            token = base64.b64encode(("%s:%s" % (USER, PASSWORD)).encode()).decode()
+            headers["Authorization"] = "Basic " + token
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(BASE + path, method=method, data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw) if raw else None)
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            return e.code, (json.loads(raw) if raw else None)
+
+    # Wait for the service (health is unauthenticated by design).
+    for attempt in range(120):
+        try:
+            code, _ = call("/api/v1/health")
+            if code == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(5)
+    else:
+        sys.exit("ERROR: snow-mock never became healthy at %s" % BASE)
+    print("snow-mock is healthy at %s" % BASE)
+
+    for app in APPS:
+        ci = "%s/%s" % ("{{ $group }}", app)
+        query = urllib.parse.urlencode({"cmdb_ci": ci, "guid": GUID, "limit": 1})
+        code, existing = call("/api/v1/incidents?" + query)
+        if code == 200 and existing and existing.get("result"):
+            print("registered  %-40s (existing %s)" % (app, existing["result"][0]["number"]))
+            continue
+        description = (
+            "Demo application registered by the tssc-validated-pattern install.\n\n"
+            "- **Application:** %s\n"
+            "- **GitLab project:** %s\n"
+            "- **Source of truth:** the GitLab group below; incidents linked to this "
+            "CI can be opened against it.\n"
+        ) % (app, ci)
+        code, created = call("/api/v1/incidents", method="POST", body={
+            "short_description": "Application registered: %s" % app,
+            "caller_id": "tssc-demo",
+            "description": description,
+            "cmdb_ci": ci,
+            "guid": GUID,
+            "category": "Application",
+            "subcategory": "Registration",
+            "state": "New",
+            "priority": "4 - Low",
+            "assignment_group": "Service Desk",
+            "comment": "Registered by the tssc-validated-pattern application-registration Job.",
+        })
+        if code == 201:
+            print("registered  %-40s (%s)" % (app, created["result"]["number"]))
+        else:
+            sys.exit("ERROR: registering %s failed (HTTP %s): %s" % (app, code, created))
+    print("application registration complete")
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: snow-register-apps
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    # A Job's pod template is immutable; Replace deletes and recreates it,
+    # which is also how you re-run the registration (Force is required
+    # alongside Replace for Jobs -- see components/gitlab/job-gitlab-init).
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: register
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "-I", "/scripts/register.py"]
+        env:
+        - name: SNOW_APPS
+          value: {{ .Values.applications | toJson | quote }}
+        {{- if $auth.username }}
+        - name: SNOW_AUTH_USER
+          value: {{ $auth.username | quote }}
+        - name: SNOW_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $auth.passwordSecretName | quote }}
+              key: password
+        {{- end }}
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+      volumes:
+      - name: script
+        configMap:
+          name: snow-register-apps

@@ -73,6 +73,7 @@ data:
         "orchestrator-db-password":  {"password": lambda: hexgen(16)},
         "tpa-cli-client-secret":     {"client-secret": lambda: hexgen(16)},
         "rhtpa-ui-password":         {"password": lambda: hexgen(12)},
+        "snow-ui-password":          {"password": lambda: hexgen(12)},
         "artifactory-admin-password": {"password": lambda: hexgen(12)},
         "artifactory-keys": {
             "master-key": lambda: hexgen(32),   # 32 bytes hex, JFrog requirement

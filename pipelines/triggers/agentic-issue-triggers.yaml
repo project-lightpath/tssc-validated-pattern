@@ -167,6 +167,9 @@ spec:
     # back to it (see the issue_iid overlay in the EventListener).
     - name: issue-iid
       value: $(extensions.issue_iid)
+    # Snow incident number extracted from the comment (empty = none given).
+    - name: snow-incident-number
+      value: $(extensions.snow_incident)
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: TriggerTemplate
@@ -199,6 +202,8 @@ spec:
     - name: JUSTIFICATION
       default: ""
     - name: issue-iid
+      default: ""
+    - name: snow-incident-number
       default: ""
     # Workspace backing — override to match your cluster's storage/config.
     - name: workspace-size
@@ -244,6 +249,8 @@ spec:
             value: $(tt.params.JUSTIFICATION)
           - name: issue-iid
             value: $(tt.params.issue-iid)
+          - name: snow-incident-number
+            value: $(tt.params.snow-incident-number)
         workspaces:
           - name: workspace
             volumeClaimTemplate:
@@ -646,6 +653,15 @@ spec:
                 - key: commentRaw
                   expression: >-
                     body.object_attributes.note.translate('^/remediate(-bump)?', '')
+                # Optional Snow incident number from the comment (e.g.
+                # "/remediate INC0023261"). CEL has no regex capture groups;
+                # isolate the token by splitting on the uppercase INC prefix
+                # and validating the remainder is digits. Reads body
+                # directly -- sibling overlays in one cel interceptor do not
+                # chain (see the gotcha above).
+                - key: snow_incident
+                  expression: >-
+                    (body.object_attributes.note.contains("INC") && body.object_attributes.note.split("INC").size() > 1 && body.object_attributes.note.split("INC")[1].split(" ")[0].matches('[0-9]+')) ? "INC" + body.object_attributes.note.split("INC")[1].split(" ")[0] : "" 
         # (b) Parse both raw blocks into maps (parseYAML also accepts JSON). Skip
         #     parsing when there's no "key: value" content, to avoid errors on empty
         #     text. Reads extensions.issueRaw / commentRaw from the previous stage.

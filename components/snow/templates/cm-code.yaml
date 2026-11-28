@@ -1,0 +1,16 @@
+{{- $subdomain := required "Set cluster.subdomain" .Values.cluster.subdomain }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: snow-mock-code
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  app.py: |
+{{ .Files.Get "files/snow-mock/app.py" | indent 4 }}
+  requirements.txt: |
+{{ .Files.Get "files/snow-mock/requirements.txt" | indent 4 }}

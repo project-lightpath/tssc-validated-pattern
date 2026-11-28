@@ -270,6 +270,17 @@ components:
     enabled: true
     syncWave: "16"
 
+  # snow-mock, the ServiceNow ITSM simulator from the lightwell-workshop
+  # (vendored under components/snow). Demo-facing incident board; the two
+  # example applications are registered on it at install. Needs only the
+  # Vault-backed UI password, so any wave after external-secrets (1) works;
+  # 5 keeps it early and out of the application chain's way. No Automation
+  # Orchestrator integration yet.
+  snow:
+    enabled: true
+    namespace: snow
+    syncWave: "5"
+
   # The example application's dev/qa/prod environments — the consumer end of
   # the CD chain. Wave 16, AFTER everything else, deliberately: each
   # Application's health includes the Deployment pulling its image, and the

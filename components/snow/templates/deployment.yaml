@@ -1,0 +1,109 @@
+{{- $subdomain := required "Set cluster.subdomain" .Values.cluster.subdomain }}
+{{- $auth := .Values.snow.auth }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: snow-mock
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  # Recreate, NOT the default RollingUpdate: with one replica a rolling
+  # update can briefly run two pods, both mounting the RWO state PVC. The
+  # new pod would load state.json before the old pod's final persist and
+  # could then overwrite the file without the old pod's last incidents.
+  # (Also: two pods on one node cannot both mount a ReadWriteOnce claim --
+  # the replacement would stick Pending.)
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: snow-mock
+  template:
+    metadata:
+      labels:
+        app: snow-mock
+      annotations:
+        # Roll the pod when the vendored code or static bundle changes.
+        # requirements.txt is included: a dependency-only change must also
+        # restart the pod -- its subPath mount does not live-update.
+        checksum/code: {{ printf "%s%s" (.Files.Get "files/snow-mock/app.py") (.Files.Get "files/snow-mock/requirements.txt") | sha256sum }}
+        checksum/static: {{ printf "%s%s%s%s" (.Files.Get "files/snow-mock/static/app.js") (.Files.Get "files/snow-mock/static/index.html") (.Files.Get "files/snow-mock/static/styles.css") (.Files.Get "files/snow-mock/static/snow.png") | sha256sum }}
+    spec:
+      containers:
+      - name: snow-mock
+        image: {{ .Values.snow.runtimeImage | quote }}
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -ec
+        - |
+          pip install --quiet --target=/tmp/deps -r /opt/app/requirements.txt
+          export PYTHONPATH=/tmp/deps
+          cd /opt/app
+          exec python -m gunicorn --bind 0.0.0.0:8080 --workers 1 --threads 4 app:app
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        # Incidents live in memory; the state file survives pod restarts so
+        # incident numbers are not re-issued (the workshop learned this the
+        # hard way -- see their PVC comment).
+        - name: SNOW_STATE_FILE
+          value: /data/state.json
+        - name: DEMO_USER_NAME
+          value: "Demo User"
+        {{- if $auth.username }}
+        - name: SNOW_AUTH_USER
+          value: {{ $auth.username | quote }}
+        - name: SNOW_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ $auth.passwordSecretName | quote }}
+              key: password
+        {{- end }}
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        volumeMounts:
+        - name: state
+          mountPath: /data
+        - name: code
+          mountPath: /opt/app/app.py
+          subPath: app.py
+        - name: code
+          mountPath: /opt/app/requirements.txt
+          subPath: requirements.txt
+        - name: static
+          mountPath: /opt/app/static
+      volumes:
+      - name: state
+        persistentVolumeClaim:
+          claimName: snow-mock-state
+      - name: code
+        configMap:
+          name: snow-mock-code
+      - name: static
+        configMap:
+          name: snow-mock-static

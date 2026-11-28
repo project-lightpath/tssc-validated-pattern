@@ -19,6 +19,8 @@
 #   quay-admin-password         Quay superuser (quay-registry ns)
 #   tpa-db-password             RHTPA Postgres (trusted-profile-analyzer ns)
 #   orchestrator-db-password    Orchestrator Postgres
+#   snow-ui-password            snow-mock UI Basic-auth password (snow ns,
+#                               username is the chart's fixed "demo")
 #   tpa-cli-client-secret       the tpa-cli OIDC client (single most
 #                               load-bearing credential: Keycloak client,
 #                               oidc-tpa-cli Secret and tpa-secret must all

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: snow
+description: >
+  snow-mock, the lightweight ServiceNow ITSM simulator used by the
+  lightwell-workshop (vendored from redhat-ads-tech/snow-mock via
+  rhpds/lightwell-workshop), deployed as a demo-facing incident board.
+  The tssc demo registers its example applications as CMDB CIs on
+  incidents so the board shows the estate. No Automation Orchestrator
+  ticket integration (yet).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,0 +1,27 @@
+{{- $subdomain := required "Set cluster.subdomain" .Values.cluster.subdomain }}
+# The SPA is served by the app from /opt/app/static. snow.png is binary, so
+# chart.js is NOT vendored here: at ~207KB it pushes the ConfigMap past
+# the 256KB metadata.annotations limit (Argo client-side apply stores
+# the whole manifest as last-applied-configuration) -- index.html loads
+# it from the CDN pinned by version with an SRI hash instead.
+# it rides as a ConfigMap binaryData entry (base64 in the manifest, mounted
+# as a file -- the same vendoring trick the workshop chart uses).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: snow-mock-static
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  index.html: |
+{{ .Files.Get "files/snow-mock/static/index.html" | indent 4 }}
+  app.js: |
+{{ .Files.Get "files/snow-mock/static/app.js" | indent 4 }}
+  styles.css: |
+{{ .Files.Get "files/snow-mock/static/styles.css" | indent 4 }}
+binaryData:
+  snow.png: {{ .Files.Get "files/snow-mock/static/snow.png" | b64enc | quote }}

@@ -1,0 +1,63 @@
+{{- $subdomain := required "Set cluster.subdomain" .Values.cluster.subdomain }}
+{{- $host := .Values.route.host | default (printf "snow.%s" $subdomain) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: snow-mock-state
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    # Wave 1, WITH its consuming Deployment (the workshop's own placement).
+    # A wave -1 PVC with a WaitForFirstConsumer default StorageClass stays
+    # Pending until a pod mounts it; Argo scores Pending PVCs as
+    # Progressing and would never admit the wave-1 Deployment -- a
+    # wave-deadlocked install (the same class as the external-secrets
+    # InstallPlan cycle).
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.snow.stateStorage | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: snow-mock
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  selector:
+    app: snow-mock
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: snow-mock
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: snow-mock
+    app.kubernetes.io/part-of: tssc-validated-pattern
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  host: {{ $host | quote }}
+  to:
+    kind: Service
+    name: snow-mock
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
